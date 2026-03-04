@@ -1,0 +1,191 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION          = 'us-east-1'
+        AWS_ACCOUNT_ID      = '672897707899'
+        ECR_REPO_NAME       = 'poc6-hello-world'
+        ECR_REGISTRY        = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        IMAGE_NAME          = "${ECR_REGISTRY}/${ECR_REPO_NAME}"
+        IMAGE_TAG           = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(7) ?: 'latest'}"
+        SONAR_PROJECT_KEY   = 'poc6-hello-world'
+        HELM_RELEASE_NAME   = 'hello-world'
+        HELM_CHART_PATH     = './helm/hello-world'
+        ARGOCD_APP_NAME     = 'hello-world'
+        ARGOCD_SERVER       = credentials('argocd-server-url')
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        // ─── Stage 1: Checkout ────────────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo "Branch: ${env.BRANCH_NAME} | Build: ${env.BUILD_NUMBER}"
+            }
+        }
+
+        // ─── Stage 2: SonarQube Analysis ──────────────────────────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                dir('app') {
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            sonar-scanner \
+                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                              -Dsonar.sources=src \
+                              -Dsonar.tests=__tests__ \
+                              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ─── Stage 3: Quality Gate ────────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        // ─── Stage 4: npm Install & Test ──────────────────────────────────────
+        stage('npm Install & Test') {
+            steps {
+                dir('app') {
+                    sh 'npm ci'
+                    sh 'npm test'
+                }
+            }
+            post {
+                always {
+                    dir('app') {
+                        junit(testResults: 'coverage/junit.xml', allowEmptyResults: true)
+                        publishHTML([
+                            allowMissing: false,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: 'coverage/lcov-report',
+                            reportFiles: 'index.html',
+                            reportName: 'Coverage Report'
+                        ])
+                    }
+                }
+            }
+        }
+
+        // ─── Stage 5: Docker Build ────────────────────────────────────────────
+        stage('Docker Build') {
+            steps {
+                dir('app') {
+                    sh """
+                        docker build \
+                          --build-arg APP_VERSION=${IMAGE_TAG} \
+                          -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                          -t ${IMAGE_NAME}:latest \
+                          .
+                    """
+                }
+            }
+        }
+
+        // ─── Stage 6: Trivy Security Scan ────────────────────────────────────
+        stage('Trivy Scan') {
+            steps {
+                sh """
+                    trivy image \
+                      --exit-code 1 \
+                      --severity HIGH,CRITICAL \
+                      --no-progress \
+                      --format table \
+                      ${IMAGE_NAME}:${IMAGE_TAG} || true
+                """
+                sh """
+                    trivy image \
+                      --format json \
+                      --output trivy-report.json \
+                      ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        // ─── Stage 7: Push to ECR ─────────────────────────────────────────────
+        stage('Push to ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                          docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+
+        // ─── Stage 8: Update Helm values & commit ────────────────────────────
+        stage('Update Helm Image Tag') {
+            steps {
+                sh """
+                    sed -i 's|tag: .*|tag: "${IMAGE_TAG}"|' ${HELM_CHART_PATH}/values.yaml
+                """
+                sh """
+                    git config user.email "jenkins@poc6.local"
+                    git config user.name "Jenkins CI"
+                    git add ${HELM_CHART_PATH}/values.yaml
+                    git commit -m "ci: update image tag to ${IMAGE_TAG} [skip ci]"
+                    git push origin ${env.BRANCH_NAME}
+                """
+            }
+        }
+
+        // ─── Stage 9: ArgoCD Sync ─────────────────────────────────────────────
+        stage('ArgoCD Sync') {
+            steps {
+                withCredentials([string(credentialsId: 'argocd-auth-token',
+                                        variable: 'ARGOCD_AUTH_TOKEN')]) {
+                    sh """
+                        argocd app sync ${ARGOCD_APP_NAME} \
+                          --server ${ARGOCD_SERVER} \
+                          --auth-token ${ARGOCD_AUTH_TOKEN} \
+                          --insecure
+                        argocd app wait ${ARGOCD_APP_NAME} \
+                          --server ${ARGOCD_SERVER} \
+                          --auth-token ${ARGOCD_AUTH_TOKEN} \
+                          --insecure \
+                          --health \
+                          --timeout 120
+                    """
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline succeeded! Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo "Pipeline failed. Check logs above."
+        }
+        always {
+            sh 'docker rmi ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest || true'
+            cleanWs()
+        }
+    }
+}

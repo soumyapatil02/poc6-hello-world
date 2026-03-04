@@ -1,0 +1,19 @@
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/tfplan
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/terraform.tfvars
+
+# Node.js
+app/node_modules/
+app/coverage/
+app/.env
+
+# Docker
+*.tar
+
+# OS
+.DS_Store
+Thumbs.db

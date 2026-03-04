@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hello-world
+description: Hello World application for POC-6
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - hello-world
+  - poc6
+maintainers:
+  - name: poc6-team
