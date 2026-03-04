@@ -1,0 +1,128 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'helm/hello-world/values.yaml'   # avoid loop when we update image tag
+  pull_request:
+    branches: [master]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 672897707899.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPO: poc6-hello-world
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: write   # required to push updated values.yaml
+
+jobs:
+  # ─── Job 1: Test ──────────────────────────────────────────────────────────
+  test:
+    name: npm Test & SonarQube
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm test -- --coverage --coverageReporters=lcov
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        if: github.event_name == 'push'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: app
+          args: >
+            -Dsonar.projectKey=poc6-hello-world
+            -Dsonar.sources=src
+            -Dsonar.tests=__tests__
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+        continue-on-error: true   # non-blocking if SonarQube not configured
+
+  # ─── Job 2: Build, Scan & Push ────────────────────────────────────────────
+  build-push:
+    name: Docker Build → Trivy → ECR Push
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    outputs:
+      image_tag: ${{ github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ github.sha }} \
+            -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPO:latest \
+            app/
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: 0              # non-blocking for POC; set to 1 to fail on CRITICAL
+          severity: HIGH,CRITICAL
+
+      - name: Push image to ECR
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+          echo "Pushed: $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+
+  # ─── Job 3: Update Helm values → triggers ArgoCD ─────────────────────────
+  update-helm:
+    name: Update Helm Image Tag (triggers ArgoCD)
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update image tag in values.yaml
+        run: |
+          sed -i "s|tag: .*|tag: \"${{ github.sha }}\"|" helm/hello-world/values.yaml
+          cat helm/hello-world/values.yaml | grep tag
+
+      - name: Commit & push updated values.yaml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/hello-world/values.yaml
+          git diff --staged --quiet || git commit -m "ci: update image tag to ${{ github.sha }}"
+          git push
