@@ -3,7 +3,7 @@ replicaCount: 2
 image:
   repository: 672897707899.dkr.ecr.us-east-1.amazonaws.com/poc6-hello-world
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "60170b7aec0ecbb5d50580bf7d437d259d39759c"
 
 nameOverride: ""
 fullnameOverride: ""
