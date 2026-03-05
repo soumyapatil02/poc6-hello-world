@@ -9,9 +9,8 @@ spec:
   project: default
 
   source:
-    # Replace with your GitHub repo URL
-    repoURL: https://github.com/YOUR_ORG/poc6-hello-world.git
-    targetRevision: main
+    repoURL: https://github.com/soumyapatil02/poc6-hello-world.git
+    targetRevision: master
     path: helm/hello-world
 
   destination:
