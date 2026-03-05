@@ -7,7 +7,7 @@ describe('Hello World App', () => {
   test('GET / returns hello world message', async () => {
     const res = await request(app).get('/');
     expect(res.statusCode).toBe(200);
-    expect(res.body.message).toBe('Hello World from POC-6!');
+    expect(res.body.message).toBe('Hello World from Soumya');
     expect(res.body.version).toBeDefined();
   });
 
