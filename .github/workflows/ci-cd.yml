@@ -112,9 +112,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
+       
       - name: Update image tag in values.yaml
         run: |
           sed -i "s|tag: .*|tag: \"${{ github.sha }}\"|" helm/hello-world/values.yaml
