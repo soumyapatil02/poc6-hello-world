@@ -48,8 +48,8 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@master
         if: github.event_name == 'push' && secrets.SONAR_TOKEN != ''
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: d6ae52a54bc061f747c93b6c012320b03e17fe5d
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           projectBaseDir: app
           args: >
