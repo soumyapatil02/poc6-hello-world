@@ -52,7 +52,7 @@ jobs:
         with:
           projectBaseDir: app
           args: >
-            -Dsonar.projectKey=poc6-hello-world
+            -Dsonar.projectKey=soumyapatil02_poc6-hello-world
             -Dsonar.organization=soumyapatil02
             -Dsonar.sources=src
             -Dsonar.tests=__tests__
